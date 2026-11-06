@@ -1,0 +1,385 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function profilePath(uid) {
+      return /databases/$(database)/documents/profiles/$(uid);
+    }
+
+    function requestPath(uid) {
+      return /databases/$(database)/documents/access_requests/$(uid);
+    }
+
+    function matriculaPath(matricula) {
+      return /databases/$(database)/documents/matriculas/$(matricula);
+    }
+
+    function isApproved() {
+      return signedIn()
+        && exists(profilePath(request.auth.uid))
+        && get(profilePath(request.auth.uid)).data.status == 'approved';
+    }
+
+    function appRole() {
+      return get(profilePath(request.auth.uid)).data.account_role;
+    }
+
+    function isStaff() {
+      return isApproved() && appRole() in ['professor', 'administrador'];
+    }
+
+    function canReview(role) {
+      return isApproved()
+        && ((appRole() == 'professor' && role == 'aluno')
+          || (appRole() == 'administrador' && role == 'professor'));
+    }
+
+    function equipmentPath(id) {
+      return /databases/$(database)/documents/equipment/$(id);
+    }
+
+    function loanPath(id) {
+      return /databases/$(database)/documents/loans/$(id);
+    }
+
+    function isProjectMember(projectId) {
+      let memberRef = /databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid);
+      return isApproved()
+        && exists(memberRef)
+        && get(memberRef).data.status == 'approved';
+    }
+
+    function validBorrowUpdate(equipmentId) {
+      let loanId = request.resource.data.last_loan_id;
+      let loanRef = loanPath(loanId);
+      let loan = getAfter(loanRef).data;
+      return isApproved()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['quantity_available', 'status', 'last_loan_id', 'last_loan_action'])
+        && request.resource.data.last_loan_action == 'borrow'
+        && !exists(loanRef)
+        && existsAfter(loanRef)
+        && loan.equipment_id == equipmentId
+        && loan.borrower_id == request.auth.uid
+        && loan.person_name == get(profilePath(request.auth.uid)).data.full_name
+        && loan.quantity is int
+        && loan.quantity > 0
+        && resource.data.quantity_available >= loan.quantity
+        && request.resource.data.quantity_available == resource.data.quantity_available - loan.quantity
+        && request.resource.data.status
+          == (request.resource.data.quantity_available == 0 ? 'borrowed' : 'available');
+    }
+
+    function validReturnUpdate(equipmentId) {
+      let loanId = request.resource.data.last_loan_id;
+      let loanRef = loanPath(loanId);
+      let loanBefore = get(loanRef).data;
+      let loanAfter = getAfter(loanRef).data;
+      return isApproved()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['quantity_available', 'status', 'last_loan_id', 'last_loan_action'])
+        && request.resource.data.last_loan_action == 'return'
+        && exists(loanRef)
+        && existsAfter(loanRef)
+        && loanBefore.equipment_id == equipmentId
+        && loanBefore.returned_at == null
+        && (loanBefore.borrower_id == request.auth.uid || appRole() in ['professor', 'administrador'])
+        && loanAfter.returned_at is string
+        && request.resource.data.quantity_available
+          == resource.data.quantity_available + loanBefore.quantity
+        && request.resource.data.quantity_available <= resource.data.quantity_total
+        && request.resource.data.status == 'available';
+    }
+
+    match /profiles/{uid} {
+      allow get: if signedIn()
+        && (request.auth.uid == uid
+          || (isApproved()
+            && resource.data.account_role == 'professor'
+            && resource.data.status == 'approved'));
+      allow list: if isApproved()
+        && resource.data.account_role == 'professor'
+        && resource.data.status == 'approved';
+
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.auth.token.email_verified == true
+        && request.resource.data.keys().hasAll([
+          'id', 'matricula', 'full_name', 'email', 'account_role', 'status', 'created_at'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'id', 'matricula', 'full_name', 'email', 'account_role', 'status', 'created_at'
+        ])
+        && request.resource.data.id == uid
+        && request.resource.data.matricula is string
+        && request.resource.data.full_name is string
+        && request.resource.data.email is string
+        && request.resource.data.created_at is string
+        && request.resource.data.status == 'approved'
+        && request.resource.data.email == request.auth.token.email
+        && exists(requestPath(uid))
+        && get(requestPath(uid)).data.status == 'approved'
+        && get(requestPath(uid)).data.account_role == request.resource.data.account_role
+        && get(requestPath(uid)).data.matricula == request.resource.data.matricula
+        && get(requestPath(uid)).data.full_name == request.resource.data.full_name
+        && get(requestPath(uid)).data.email == request.resource.data.email
+        && exists(matriculaPath(request.resource.data.matricula))
+        && get(matriculaPath(request.resource.data.matricula)).data.uid == uid;
+      allow update, delete: if false;
+    }
+
+    match /public_profiles/{uid} {
+      allow get: if isApproved()
+        && (request.auth.uid == uid || resource.data.status == 'approved');
+      allow list: if isApproved() && resource.data.status == 'approved';
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.auth.token.email_verified == true
+        && request.resource.data.keys().hasAll(['id', 'full_name', 'matricula', 'email', 'account_role', 'status'])
+        && request.resource.data.keys().hasOnly(['id', 'full_name', 'matricula', 'email', 'account_role', 'status'])
+        && request.resource.data.id == uid
+        && request.resource.data.status == 'approved'
+        && existsAfter(profilePath(uid))
+        && getAfter(profilePath(uid)).data.status == 'approved'
+        && request.resource.data.full_name == getAfter(profilePath(uid)).data.full_name
+        && request.resource.data.matricula == getAfter(profilePath(uid)).data.matricula
+        && request.resource.data.email == getAfter(profilePath(uid)).data.email
+        && request.resource.data.account_role == getAfter(profilePath(uid)).data.account_role;
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['email'])
+        && exists(profilePath(uid))
+        && get(profilePath(uid)).data.status == 'approved'
+        && request.resource.data.email == get(profilePath(uid)).data.email;
+      allow delete: if false;
+    }
+
+    match /access_requests/{uid} {
+      allow get: if signedIn()
+        && (request.auth.uid == uid
+          || (resource.data.status == 'pending' && canReview(resource.data.account_role)));
+      allow list: if resource.data.status == 'pending'
+        && canReview(resource.data.account_role);
+
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasAll([
+          'id', 'matricula', 'full_name', 'email', 'account_role', 'status', 'created_at'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'id', 'matricula', 'full_name', 'email', 'account_role', 'status', 'created_at'
+        ])
+        && request.resource.data.id == uid
+        && request.resource.data.matricula is string
+        && request.resource.data.matricula.matches('^[a-z0-9._-]{1,100}$')
+        && request.resource.data.full_name is string
+        && request.resource.data.full_name.size() >= 2
+        && request.resource.data.full_name.size() <= 150
+        && request.resource.data.created_at is string
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.account_role in ['aluno', 'professor']
+        && request.resource.data.status == 'pending';
+
+      allow update: if resource.data.status == 'pending'
+        && canReview(resource.data.account_role)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status', 'reviewed_by', 'reviewed_at'])
+        && request.resource.data.status in ['approved', 'rejected']
+        && request.resource.data.reviewed_by == request.auth.uid
+        && request.resource.data.reviewed_at is string
+        && (request.resource.data.status == 'rejected'
+          || (existsAfter(matriculaPath(resource.data.matricula))
+            && getAfter(matriculaPath(resource.data.matricula)).data.uid == uid));
+      allow delete: if false;
+    }
+
+    match /matriculas/{matricula} {
+      allow get: if isStaff()
+        || (signedIn() && resource.data.uid == request.auth.uid);
+      allow list: if false;
+      allow create: if isStaff()
+        && existsAfter(requestPath(request.resource.data.uid))
+        && getAfter(requestPath(request.resource.data.uid)).data.status == 'approved'
+        && getAfter(requestPath(request.resource.data.uid)).data.reviewed_by == request.auth.uid
+        && getAfter(requestPath(request.resource.data.uid)).data.matricula == matricula
+        && canReview(getAfter(requestPath(request.resource.data.uid)).data.account_role)
+        && request.resource.data.keys().hasOnly(['uid'])
+        && request.resource.data.uid is string;
+      allow update, delete: if false;
+    }
+
+    match /equipment/{equipmentId} {
+      allow read: if isApproved();
+      allow create: if isStaff()
+        && request.resource.data.keys().hasAll([
+          'name', 'code', 'category', 'location', 'status',
+          'quantity_total', 'quantity_available', 'created_at'
+        ])
+        && request.resource.data.code is string
+        && request.resource.data.code.lower() == equipmentId
+        && request.resource.data.keys().hasOnly([
+          'name', 'code', 'category', 'location', 'status',
+          'quantity_total', 'quantity_available', 'created_at'
+        ])
+        && request.resource.data.quantity_total is int
+        && request.resource.data.quantity_total > 0
+        && request.resource.data.quantity_available == request.resource.data.quantity_total
+        && request.resource.data.created_at is string
+        && request.resource.data.status == 'available';
+      allow update: if (isStaff() && request.resource.data.code == resource.data.code)
+        || validBorrowUpdate(equipmentId)
+        || validReturnUpdate(equipmentId);
+      allow delete: if isStaff();
+    }
+
+    match /loans/{loanId} {
+      allow read: if isApproved()
+        && (resource.data.borrower_id == request.auth.uid || isStaff());
+      allow create: if isApproved()
+        && request.resource.data.keys().hasAll([
+          'id', 'equipment_id', 'borrower_id', 'person_name', 'taken_at',
+          'expected_return_at', 'returned_at', 'quantity'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'id', 'equipment_id', 'borrower_id', 'person_name', 'taken_at',
+          'expected_return_at', 'returned_at', 'quantity'
+        ])
+        && request.resource.data.id == loanId
+        && request.resource.data.borrower_id == request.auth.uid
+        && request.resource.data.person_name == get(profilePath(request.auth.uid)).data.full_name
+        && request.resource.data.taken_at is string
+        && request.resource.data.expected_return_at is string
+        && request.resource.data.quantity is int
+        && request.resource.data.quantity > 0
+        && request.resource.data.returned_at == null
+        && exists(equipmentPath(request.resource.data.equipment_id))
+        && existsAfter(equipmentPath(request.resource.data.equipment_id))
+        && getAfter(equipmentPath(request.resource.data.equipment_id)).data.last_loan_id == loanId
+        && getAfter(equipmentPath(request.resource.data.equipment_id)).data.last_loan_action == 'borrow';
+      allow update: if isApproved()
+        && resource.data.returned_at == null
+        && (resource.data.borrower_id == request.auth.uid || isStaff())
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['returned_at'])
+        && request.resource.data.returned_at is string
+        && getAfter(equipmentPath(resource.data.equipment_id)).data.last_loan_id == loanId
+        && getAfter(equipmentPath(resource.data.equipment_id)).data.last_loan_action == 'return';
+      allow delete: if false;
+    }
+
+    match /printer_reservations/{reservationId} {
+      allow read: if isApproved()
+        && (resource.data.user_id == request.auth.uid || isStaff());
+      allow create: if isApproved()
+        && request.resource.data.keys().hasAll([
+          'id', 'user_id', 'student_name', 'student_email', 'teacher_id',
+          'teacher_name', 'teacher_email', 'reservation_date', 'start_time',
+          'end_time', 'purpose', 'status', 'created_at'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'id', 'user_id', 'student_name', 'student_email', 'teacher_id',
+          'teacher_name', 'teacher_email', 'reservation_date', 'start_time',
+          'end_time', 'purpose', 'status', 'created_at'
+        ])
+        && request.resource.data.id == reservationId
+        && request.resource.data.user_id == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.student_name == get(profilePath(request.auth.uid)).data.full_name
+        && request.resource.data.student_email == get(profilePath(request.auth.uid)).data.email
+        && request.resource.data.teacher_id is string
+        && exists(profilePath(request.resource.data.teacher_id))
+        && get(profilePath(request.resource.data.teacher_id)).data.account_role == 'professor'
+        && get(profilePath(request.resource.data.teacher_id)).data.status == 'approved'
+        && request.resource.data.teacher_name == get(profilePath(request.resource.data.teacher_id)).data.full_name
+        && request.resource.data.teacher_email == get(profilePath(request.resource.data.teacher_id)).data.email
+        && request.resource.data.reservation_date is string
+        && request.resource.data.start_time is string
+        && request.resource.data.end_time is string
+        && request.resource.data.start_time < request.resource.data.end_time
+        && request.resource.data.purpose is string
+        && request.resource.data.purpose.size() > 0
+        && request.resource.data.purpose.size() <= 500
+        && request.resource.data.created_at is string;
+      allow update: if isStaff()
+        && resource.data.status == 'pending'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && request.resource.data.status in ['approved', 'rejected'];
+      allow delete: if false;
+    }
+
+    match /projects/{projectId} {
+      allow get, list: if isApproved();
+      allow create: if isStaff()
+        && request.resource.data.keys().hasAll(['name', 'description', 'created_by', 'created_at', 'updated_at'])
+        && request.resource.data.keys().hasOnly(['name', 'description', 'created_by', 'created_at', 'updated_at'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.name.size() <= 150
+        && request.resource.data.description is string
+        && request.resource.data.description.size() <= 2000
+        && request.resource.data.created_by == request.auth.uid
+        && request.resource.data.created_at is string
+        && request.resource.data.updated_at is string;
+      allow update: if isStaff()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'description', 'updated_at'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.name.size() <= 150
+        && request.resource.data.description is string
+        && request.resource.data.description.size() <= 2000
+        && request.resource.data.updated_at is string;
+      allow delete: if isStaff();
+
+      match /members/{uid} {
+        allow get: if isApproved()
+          && (request.auth.uid == uid || isStaff() || resource.data.status == 'approved');
+        allow list: if isStaff()
+          || (isApproved() && resource.data.status == 'approved');
+        allow create: if isApproved()
+          && appRole() == 'aluno'
+          && exists(/databases/$(database)/documents/projects/$(projectId))
+          && request.auth.uid == uid
+          && request.resource.data.keys().hasAll(['uid', 'full_name', 'matricula', 'status', 'requested_at'])
+          && request.resource.data.keys().hasOnly(['uid', 'full_name', 'matricula', 'status', 'requested_at'])
+          && request.resource.data.uid == uid
+          && request.resource.data.full_name == get(profilePath(uid)).data.full_name
+          && request.resource.data.matricula == get(profilePath(uid)).data.matricula
+          && request.resource.data.status == 'pending'
+          && request.resource.data.requested_at is string;
+        allow update: if (isStaff()
+            && resource.data.status == 'pending'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reviewed_by', 'reviewed_at'])
+            && request.resource.data.status in ['approved', 'rejected']
+            && request.resource.data.reviewed_by == request.auth.uid
+            && request.resource.data.reviewed_at is string)
+          || (isApproved()
+            && request.auth.uid == uid
+            && resource.data.status == 'rejected'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'requested_at'])
+            && request.resource.data.status == 'pending'
+            && request.resource.data.requested_at is string);
+        allow delete: if false;
+      }
+
+      match /documents/{documentId} {
+        allow get, list: if isStaff() || isProjectMember(projectId);
+        allow create: if isStaff()
+          && exists(/databases/$(database)/documents/projects/$(projectId))
+          && request.resource.data.keys().hasAll(['title', 'url', 'description', 'added_by', 'created_at'])
+          && request.resource.data.keys().hasOnly(['title', 'url', 'description', 'added_by', 'created_at'])
+          && request.resource.data.title is string
+          && request.resource.data.title.size() >= 2
+          && request.resource.data.title.size() <= 150
+          && request.resource.data.url is string
+          && request.resource.data.url.matches('^https://[^ ]+$')
+          && request.resource.data.description is string
+          && request.resource.data.description.size() <= 1000
+          && request.resource.data.added_by == request.auth.uid
+          && request.resource.data.created_at is string;
+        allow update, delete: if isStaff();
+      }
+    }
+  }
+}
