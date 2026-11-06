@@ -99,6 +99,11 @@
 .project-detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:22px;background:#fff;border:1px solid var(--line);border-radius:13px}
 .project-detail-header h2{margin:0 0 8px;font:700 24px 'Space Grotesk';color:var(--ink)}
 .project-detail-header p:not(.eyebrow){margin:0;color:#748179;font-size:13px;line-height:1.6;white-space:pre-wrap}
+.project-detail-header .project-leader{margin-top:12px!important;color:var(--lar-blue)!important;font-size:12px!important;font-weight:700}
+.project-card-leader{margin-top:10px;color:var(--lar-blue);font-size:11px;font-weight:700}
+.project-form select{width:100%;border:1px solid #dce5df;border-radius:7px;padding:10px 11px;outline:0;color:var(--ink);background:#fff;font:inherit;font-size:13px}
+.project-form select:focus{border-color:var(--lar-blue);box-shadow:0 0 0 3px color-mix(in srgb,var(--lar-blue) 14%,transparent)}
+.project-form .project-leader{margin:0;color:var(--lar-blue);font-size:12px;font-weight:700}
 .project-detail-header .primary-button{flex:none}
 .project-header-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;flex:none}
 .app-shell[data-theme="dark"] .project-header-actions .secondary-button{color:var(--lar-blue);border-color:#425260;background:#1d2b36}
@@ -126,6 +131,7 @@
 .app-shell[data-theme="dark"] .project-card,.app-shell[data-theme="dark"] .project-form,.app-shell[data-theme="dark"] .project-detail-header,.app-shell[data-theme="dark"] .directory-toolbar select{background:#18232d;border-color:#34424f;color:#e7edf3}
 .app-shell[data-theme="dark"] .project-form label{color:#c3ced7}
 .app-shell[data-theme="dark"] .project-form input,.app-shell[data-theme="dark"] .project-form textarea{background:#111a22;border-color:#425260;color:#e7edf3}
+.app-shell[data-theme="dark"] .project-form select{background:#111a22;border-color:#425260;color:#e7edf3}
 .app-shell[data-theme="dark"] .membership-callout p{color:#c3d5e3}
 .app-shell[data-theme="dark"] .directory-export-fields label{color:#c3ced7}
 .app-shell[data-theme="dark"] .directory-export-fields input{accent-color:var(--lar-blue)}

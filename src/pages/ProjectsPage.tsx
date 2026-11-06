@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { addDoc, collection, doc, getDoc, getDocs, orderBy, query, setDoc, updateDoc, where } from 'firebase/firestore'
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, orderBy, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
 import { ArrowLeft, ExternalLink, FileText, FolderKanban, Plus, Search, Users } from 'lucide-react'
 import { db } from '../lib/firebase'
-import type { AccessProfile, Project, ProjectDocument, ProjectMember } from '../types'
+import type { AccessProfile, Project, ProjectDocument, ProjectMember, PublicProfile } from '../types'
 import { Empty } from '../components/ui'
 
 export function ProjectsPage({ profile, canManage }: { profile: AccessProfile; canManage: boolean }) {
   const [projects, setProjects] = useState<Project[]>([])
+  const [professors, setProfessors] = useState<PublicProfile[]>([])
+  const [students, setStudents] = useState<PublicProfile[]>([])
   const [membershipStatuses, setMembershipStatuses] = useState<Record<string, ProjectMember['status'] | null>>({})
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
   const [documents, setDocuments] = useState<ProjectDocument[]>([])
@@ -24,8 +26,19 @@ export function ProjectsPage({ profile, canManage }: { profile: AccessProfile; c
     const firestore = db
     if (!firestore) return
     try {
-      const snapshot = await getDocs(query(collection(firestore, 'projects'), orderBy('name')))
+      const [snapshot, professorsSnapshot] = await Promise.all([
+        getDocs(query(collection(firestore, 'projects'), orderBy('name'))),
+        getDocs(query(collection(firestore, 'public_profiles'), where('status', '==', 'approved'))),
+      ])
       const loaded = snapshot.docs.map((item) => ({ ...item.data(), id: item.id }) as Project)
+      setProfessors(professorsSnapshot.docs
+        .map((item) => ({ ...item.data(), id: item.id }) as PublicProfile)
+        .filter((item) => item.account_role === 'professor')
+        .sort((left, right) => left.full_name.localeCompare(right.full_name, 'pt-BR')))
+      setStudents(professorsSnapshot.docs
+        .map((item) => ({ ...item.data(), id: item.id }) as PublicProfile)
+        .filter((item) => item.account_role === 'aluno')
+        .sort((left, right) => left.full_name.localeCompare(right.full_name, 'pt-BR')))
       const memberships = await Promise.all(loaded.map((project) => getDoc(doc(firestore, 'projects', project.id, 'members', profile.id))))
       const statuses: Record<string, ProjectMember['status'] | null> = {}
       memberships.forEach((membership, index) => {
@@ -78,15 +91,18 @@ export function ProjectsPage({ profile, canManage }: { profile: AccessProfile; c
     const form = new FormData(event.currentTarget)
     const name = String(form.get('name')).trim()
     const description = String(form.get('description')).trim()
+    const leaderId = profile.account_role === 'professor' ? profile.id : String(form.get('leader_id'))
+    const leader = professors.find((item) => item.id === leaderId)
+    if (!leader) return setError('Selecione um professor aprovado como líder do projeto.')
     try {
       const reference = await addDoc(collection(db, 'projects'), {
-        name, description, created_by: profile.id,
+        name, description, created_by: profile.id, leader_id: leader.id,
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
       })
       setNotice('Projeto criado.')
       setShowProjectForm(false)
       await loadProjects()
-      const project = { id: reference.id, name, description, created_by: profile.id, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+      const project = { id: reference.id, name, description, created_by: profile.id, leader_id: leader.id, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
       setSelectedProject(project)
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Não foi possível criar o projeto.')
@@ -99,11 +115,14 @@ export function ProjectsPage({ profile, canManage }: { profile: AccessProfile; c
     const form = new FormData(event.currentTarget)
     const name = String(form.get('name')).trim()
     const description = String(form.get('description')).trim()
+    const leaderId = profile.account_role === 'professor' ? profile.id : String(form.get('leader_id'))
+    const leader = professors.find((item) => item.id === leaderId)
+    if (!leader) return setError('Selecione um professor aprovado como líder do projeto.')
     try {
       await updateDoc(doc(db, 'projects', selectedProject.id), {
-        name, description, updated_at: new Date().toISOString(),
+        name, description, leader_id: leader.id, updated_at: new Date().toISOString(),
       })
-      const updatedProject = { ...selectedProject, name, description, updated_at: new Date().toISOString() }
+      const updatedProject = { ...selectedProject, name, description, leader_id: leader.id, updated_at: new Date().toISOString() }
       setSelectedProject(updatedProject)
       setShowEditForm(false)
       setNotice('Projeto atualizado.')
@@ -148,6 +167,79 @@ export function ProjectsPage({ profile, canManage }: { profile: AccessProfile; c
     }
   }
 
+  const addStudentToProject = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!db || !selectedProject || !canManage) return
+    const form = new FormData(event.currentTarget)
+    const student = students.find((item) => item.id === String(form.get('student_id')))
+    if (!student) return setError('Selecione um aluno aprovado.')
+    try {
+      const memberRef = doc(db, 'projects', selectedProject.id, 'members', student.id)
+      const existingMember = await getDoc(memberRef)
+      const reviewedAt = new Date().toISOString()
+      if (existingMember.exists()) {
+        if (existingMember.data().status === 'approved') return setError('Esse aluno já faz parte do projeto.')
+        await updateDoc(memberRef, { status: 'approved', reviewed_by: profile.id, reviewed_at: reviewedAt })
+      } else {
+        await setDoc(memberRef, {
+          uid: student.id,
+          full_name: student.full_name,
+          matricula: student.matricula,
+          status: 'approved',
+          requested_at: reviewedAt,
+          reviewed_by: profile.id,
+          reviewed_at: reviewedAt,
+        })
+      }
+      setNotice(`${student.full_name} foi adicionado ao projeto.`)
+      await loadProjectDetails(selectedProject)
+      await loadProjects()
+    } catch (addError) {
+      setError(addError instanceof Error ? addError.message : 'Não foi possível adicionar o aluno.')
+    }
+  }
+
+  const removeStudentFromProject = async (member: ProjectMember) => {
+    if (!db || !selectedProject || !canManage) return
+    if (!window.confirm(`Remover ${member.full_name} deste projeto? O aluno poderá solicitar filiação novamente.`)) return
+    try {
+      await deleteDoc(doc(db, 'projects', selectedProject.id, 'members', member.uid))
+      setNotice(`${member.full_name} foi removido do projeto.`)
+      await loadProjectDetails(selectedProject)
+      await loadProjects()
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : 'Não foi possível remover o aluno do projeto.')
+    }
+  }
+
+  const deleteProject = async (project: Project) => {
+    if (!db || !canManage) return
+    if (!window.confirm(`Excluir o projeto "${project.name}" e todos os documentos e vínculos de alunos? Essa ação não pode ser desfeita.`)) return
+    try {
+      for (const subcollection of ['members', 'documents']) {
+        const snapshot = await getDocs(collection(db, 'projects', project.id, subcollection))
+        for (let offset = 0; offset < snapshot.docs.length; offset += 400) {
+          const batch = writeBatch(db)
+          snapshot.docs.slice(offset, offset + 400).forEach((item) => batch.delete(item.ref))
+          await batch.commit()
+        }
+      }
+      await deleteDoc(doc(db, 'projects', project.id))
+      setProjects((current) => current.filter((item) => item.id !== project.id))
+      setMembershipStatuses((current) => {
+        const next = { ...current }
+        delete next[project.id]
+        return next
+      })
+      setSelectedProject(null)
+      setNotice('Projeto, documentos e vínculos foram excluídos.')
+    } catch (deleteError) {
+      setError(deleteError instanceof Error
+        ? `Não foi possível concluir a exclusão. O projeto permanece disponível; tente novamente. Detalhe: ${deleteError.message}`
+        : 'Não foi possível concluir a exclusão. O projeto permanece disponível; tente novamente.')
+    }
+  }
+
   const addDocument = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!db || !selectedProject || !canManage) return
@@ -178,11 +270,12 @@ export function ProjectsPage({ profile, canManage }: { profile: AccessProfile; c
     {notice && <div className="success-note">{notice}</div>}
     {selectedProject ? <>
       <button className="text-button project-back" onClick={() => { setSelectedProject(null); setShowDocumentForm(false); setShowEditForm(false) }}><ArrowLeft size={16} /> Voltar aos projetos</button>
-      <div className="project-detail-header"><div><p className="eyebrow">PROJETO DO LABORATÓRIO</p><h2>{selectedProject.name}</h2><p>{selectedProject.description}</p></div>
-        {canManage && <div className="project-header-actions"><button className="secondary-button" onClick={() => setShowEditForm(!showEditForm)}>Editar projeto</button><button className="primary-button" onClick={() => setShowDocumentForm(!showDocumentForm)}><Plus size={16} /> Adicionar documento</button></div>}
+      <div className="project-detail-header"><div><p className="eyebrow">PROJETO DO LABORATÓRIO</p><h2>{selectedProject.name}</h2><p>{selectedProject.description}</p><p className="project-leader">Líder: {professors.find((item) => item.id === selectedProject.leader_id)?.full_name ?? 'Não definido'}</p></div>
+        {canManage && <div className="project-header-actions"><button className="reject-button" onClick={() => { void deleteProject(selectedProject) }}>Excluir projeto</button><button className="secondary-button" onClick={() => setShowEditForm(!showEditForm)}>Editar projeto</button><button className="primary-button" onClick={() => setShowDocumentForm(!showDocumentForm)}><Plus size={16} /> Adicionar documento</button></div>}
       </div>
       {showEditForm && <form className="project-form project-inline-form" onSubmit={(event) => { void updateProject(event) }}>
         <label>Nome do projeto<input name="name" defaultValue={selectedProject.name} maxLength={150} required /></label>
+        {profile.account_role === 'administrador' && <label>Líder (professor)<select name="leader_id" defaultValue={selectedProject.leader_id ?? ''} required><option value="" disabled>Selecione um professor</option>{professors.map((professor) => <option key={professor.id} value={professor.id}>{professor.full_name} · {professor.matricula}</option>)}</select></label>}
         <label className="project-description-field">Descrição dos trabalhos<textarea name="description" defaultValue={selectedProject.description} maxLength={2000} rows={4} required /></label>
         <button className="primary-button" type="submit">Salvar alterações</button>
       </form>}
@@ -203,22 +296,27 @@ export function ProjectsPage({ profile, canManage }: { profile: AccessProfile; c
             : <p className="muted project-private-note">Os documentos serão exibidos após a aprovação da sua filiação.</p>}
         </section>
         <section className="settings-card project-section"><div className="settings-heading"><span className="settings-icon"><Users size={19} /></span><div><h2>Membros do projeto</h2><p>{members.length} filiações aprovadas</p></div></div>
+          {canManage && <form className="project-add-student" onSubmit={(event) => { void addStudentToProject(event) }}><label>Adicionar aluno aprovado<select name="student_id" defaultValue="" required><option value="" disabled>Selecione um aluno</option>{students.filter((student) => !members.some((member) => member.uid === student.id)).map((student) => <option key={student.id} value={student.id}>{student.full_name} · {student.matricula}</option>)}</select></label><button className="secondary-button" type="submit" disabled={!students.some((student) => !members.some((member) => member.uid === student.id))}>Adicionar aluno</button></form>}
           {pendingMembers.length > 0 && <div className="project-requests"><h3>Solicitações pendentes</h3>{pendingMembers.map((member) => <div className="project-member" key={member.uid}><div><strong>{member.full_name}</strong><small>Matrícula {member.matricula}</small></div><button className="approve-button" onClick={() => { void reviewMembership(member, 'approved') }}>Aprovar</button><button className="reject-button" onClick={() => { void reviewMembership(member, 'rejected') }}>Recusar</button></div>)}</div>}
-          {members.length ? members.map((member) => <div className="project-member" key={member.uid}><div><strong>{member.full_name}</strong><small>Matrícula {member.matricula}</small></div><span className="directory-role aluno">Aluno</span></div>) : <Empty text="Nenhum membro aprovado ainda." />}
+          {members.length ? members.map((member) => <div className="project-member" key={member.uid}><div><strong>{member.full_name}</strong><small>Matrícula {member.matricula}</small></div><span className="directory-role aluno">Aluno</span>{canManage && <button className="reject-button" onClick={() => { void removeStudentFromProject(member) }}>Remover</button>}</div>) : <Empty text="Nenhum membro aprovado ainda." />}
         </section>
       </div>
     </> : <>
       <div className="directory-intro"><span className="directory-icon"><FolderKanban size={20} /></span><div><h2>Projetos do laboratório</h2><p>Explore projetos, solicite filiação e acompanhe os trabalhos.</p></div>{canManage && <button className="primary-button" onClick={() => setShowProjectForm(!showProjectForm)}><Plus size={16} /> Novo projeto</button>}</div>
-      {showProjectForm && <form className="project-form" onSubmit={(event) => { void createProject(event) }}><label>Nome do projeto<input name="name" maxLength={150} required /></label><label>Descrição dos trabalhos<textarea name="description" maxLength={2000} rows={4} required /></label><button className="primary-button" type="submit">Criar projeto</button></form>}
+      {showProjectForm && <form className="project-form" onSubmit={(event) => { void createProject(event) }}><label>Nome do projeto<input name="name" maxLength={150} required /></label>{profile.account_role === 'administrador' ? <label>Líder (professor)<select name="leader_id" defaultValue="" required><option value="" disabled>Selecione um professor</option>{professors.map((professor) => <option key={professor.id} value={professor.id}>{professor.full_name} · {professor.matricula}</option>)}</select></label> : <p className="project-leader">Líder: {profile.full_name}</p>}<label>Descrição dos trabalhos<textarea name="description" maxLength={2000} rows={4} required /></label><button className="primary-button" type="submit">Criar projeto</button></form>}
       <label className="search projects-search"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar projetos..." /></label>
       <div className="project-cards">{visibleProjects.length ? visibleProjects.map((project) => {
         const status = membershipStatuses[project.id]
         return <article className="project-card" key={project.id}>
           <div className="project-card-top"><span className="settings-icon"><FolderKanban size={19} /></span><span className={`project-status ${status ?? 'none'}`}>{status === 'approved' ? 'Filiado' : status === 'pending' ? 'Aguardando aprovação' : status === 'rejected' ? 'Solicitação recusada' : 'Aberto'}</span></div>
-          <h3>{project.name}</h3><p>{project.description}</p>
+          <h3>{project.name}</h3><p>{project.description}</p><span className="project-card-leader">Líder: {professors.find((item) => item.id === project.leader_id)?.full_name ?? 'Não definido'}</span>
           <div className="project-card-actions">
-            <button className="text-button" onClick={() => { void loadProjectDetails(project) }}>Ver projeto →</button>
-            {profile.account_role === 'aluno' && status !== 'approved' && <button className="action-button" disabled={status === 'pending'} onClick={() => { void requestMembership(project) }}>{status === 'pending' ? 'Aguardando aprovação' : status === 'rejected' ? 'Solicitar novamente' : 'Solicitar filiação'}</button>}
+            {profile.account_role === 'aluno'
+              ? status === 'approved'
+                ? <span className="project-status approved">Ingressado</span>
+                : <button className="action-button" disabled={status === 'pending'} onClick={() => { void requestMembership(project) }}>{status === 'pending' ? 'Aguardando aprovação' : status === 'rejected' ? 'Solicitar novamente' : 'Ingressar no projeto'}</button>
+              : <button className="text-button" onClick={() => { void loadProjectDetails(project) }}>Ver projeto →</button>}
+            {canManage && <><button className="text-button" onClick={() => { void loadProjectDetails(project) }}>Gerenciar →</button><button className="reject-button project-delete-button" onClick={() => { void deleteProject(project) }}>Excluir</button></>}
           </div>
         </article>
       }) : <Empty text="Nenhum projeto cadastrado." />}</div>

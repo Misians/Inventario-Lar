@@ -65,13 +65,15 @@ Use a matrícula normalizada (minúsculas) como ID do documento em `matriculas`.
 ## Fluxo de acesso
 
 - Alunos e professores criam conta com e-mail, senha de no mínimo 12 caracteres, nome e matrícula.
-- O Firebase envia um e-mail de confirmação. A pessoa deve confirmá-lo antes de acessar o app.
+- O cadastro cria a conta em **Authentication** e grava a solicitação em `access_requests/{UID}` antes de enviar o e-mail de confirmação. A pessoa deve confirmá-lo antes de acessar o app; o perfil em `profiles/{UID}` só é criado depois da confirmação e da aprovação da solicitação.
 - Professores aprovados analisam solicitações de alunos; administradores aprovam professores.
 - A matrícula passa a ser única quando uma solicitação é aprovada.
 - Tokens de sessão são emitidos/renovados pelo Firebase Authentication. Não existe JWT fixo gerado no código.
 - Usuários aprovados podem consultar o diretório com nome, matrícula, perfil, projetos e e-mail para relatórios configuráveis.
 - Professores e administradores podem cadastrar projetos e links HTTPS para documentos. Alunos solicitam filiação; o conteúdo dos projetos fica disponível após a aprovação da solicitação.
 - Na aba **Projetos**, alunos podem solicitar filiação diretamente no cartão ou na página do projeto; professores/administradores aprovam a solicitação.
+- Professores e administradores podem adicionar alunos aprovados diretamente à lista de membros, remover membros do projeto e excluir projetos. Um aluno removido pode solicitar filiação novamente. A exclusão do projeto remove também os vínculos e documentos salvos no Firestore; links externos não são apagados.
+- Professores criam projetos sendo definidos como líderes; administradores podem selecionar um professor aprovado como líder. Para atribuir líderes aos projetos antigos, edite o projeto e escolha um professor.
 - Perfis aprovados existentes recebem seu registro de diretório quando o usuário entrar novamente no app. Links externos devem ter as permissões de compartilhamento configuradas no serviço onde o arquivo está hospedado; as regras do Firestore controlam quem vê o link no app, não as permissões do arquivo externo.
 - Após atualizar o app para exibir e-mails no PDF, publique as regras atualizadas com `firebase deploy --only firestore:rules`. Perfis de diretório existentes recebem/sincronizam o e-mail ao entrarem novamente.
 

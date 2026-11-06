@@ -43,12 +43,12 @@ export function Login() {
       }
 
       let user: Awaited<ReturnType<typeof createUserWithEmailAndPassword>>['user'] | null = null
+      let requestCreated = false
       try {
         const credential = await createUserWithEmailAndPassword(auth, email.trim(), password)
         const newUser = credential.user
         if (!newUser.email) throw new Error('A conta Firebase não contém um endereço de e-mail.')
         user = newUser
-        await sendEmailVerification(newUser)
         const requestRef = doc(collection(db, 'access_requests'), newUser.uid)
         await runTransaction(db, async (transaction) => {
           transaction.set(requestRef, {
@@ -61,16 +61,21 @@ export function Login() {
             created_at: new Date().toISOString(),
           })
         })
+        requestCreated = true
+        await sendEmailVerification(newUser)
         setMessage('Solicitação criada. Confirme seu e-mail e aguarde a aprovação do acesso.')
       } catch (signupError) {
-        if (user && auth.currentUser?.uid === user.uid && !user.emailVerified) {
+        if (user && !requestCreated && auth.currentUser?.uid === user.uid && !user.emailVerified) {
           try {
             await deleteUser(user)
           } catch (cleanupError) {
             console.error('Unable to clean up incomplete Firebase signup.', cleanupError)
           }
         }
-        setMessage(signupError instanceof Error ? `Não foi possível solicitar acesso: ${signupError.message}` : 'Não foi possível solicitar acesso.')
+        const detail = signupError instanceof Error ? signupError.message : 'Erro inesperado.'
+        setMessage(requestCreated
+          ? `Sua solicitação foi salva, mas não foi possível enviar o e-mail de confirmação: ${detail} Entre na conta e use “Reenviar confirmação”.`
+          : `Não foi possível solicitar acesso: ${detail}`)
       } finally {
         setSubmitting(false)
       }
@@ -149,7 +154,7 @@ export function AccessRequests({ requests, onReview }: { requests: AccessProfile
 
 export function AccessStatus({ status, message, userUid, onSignOut, onResend, onRefresh }: { status: 'unverified' | 'pending' | 'rejected' | 'missing' | 'error'; message?: string; userUid?: string; onSignOut: () => void; onResend?: () => void; onRefresh: () => void }) {
   const copy = {
-    unverified: ['Confirme seu e-mail.', 'Use o link que enviamos para seu e-mail e depois atualize esta página.'],
+    unverified: ['Confirme seu e-mail.', 'Sua conta foi criada no Firebase Authentication e a solicitação de acesso foi registrada. Use o link enviado por e-mail e depois atualize esta página. O perfil do laboratório só será criado após a aprovação.'],
     pending: ['Acesso aguardando aprovação.', 'Seu cadastro foi recebido. O professor ou administrador responsável precisa aprovar sua solicitação.'],
     rejected: ['Solicitação não aprovada.', 'Entre em contato com a administração do laboratório caso precise de ajuda.'],
     missing: ['Perfil não encontrado no Firestore.', 'Para uma conta criada manualmente, confira se existe profiles/{UID} e se status está definido como approved. O UID deve ser o mesmo da conta em Authentication.'],

@@ -43,6 +43,10 @@ export function UsersPage() {
           const project = projectsSnapshot.docs[index]
           const projectName = projectNames.get(project.id)
           if (!projectName) return
+          const projectLeaderId = project.data().leader_id
+          if (typeof projectLeaderId === 'string') {
+            projectsByUser.set(projectLeaderId, [...(projectsByUser.get(projectLeaderId) ?? []), `${projectName} (líder)`])
+          }
           snapshot.docs.forEach((item) => {
             const member = item.data() as ProjectMember
             projectsByUser.set(member.uid, [...(projectsByUser.get(member.uid) ?? []), projectName])

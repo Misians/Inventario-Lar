@@ -52,6 +52,18 @@ service cloud.firestore {
         && get(memberRef).data.status == 'approved';
     }
 
+    function isApprovedProfessor(uid) {
+      return exists(profilePath(uid))
+        && get(profilePath(uid)).data.status == 'approved'
+        && get(profilePath(uid)).data.account_role == 'professor';
+    }
+
+    function isApprovedStudent(uid) {
+      return exists(profilePath(uid))
+        && get(profilePath(uid)).data.status == 'approved'
+        && get(profilePath(uid)).data.account_role == 'aluno';
+    }
+
     function validBorrowUpdate(equipmentId) {
       let loanId = request.resource.data.last_loan_id;
       let loanRef = loanPath(loanId);
@@ -312,23 +324,29 @@ service cloud.firestore {
     match /projects/{projectId} {
       allow get, list: if isApproved();
       allow create: if isStaff()
-        && request.resource.data.keys().hasAll(['name', 'description', 'created_by', 'created_at', 'updated_at'])
-        && request.resource.data.keys().hasOnly(['name', 'description', 'created_by', 'created_at', 'updated_at'])
+        && request.resource.data.keys().hasAll(['name', 'description', 'created_by', 'leader_id', 'created_at', 'updated_at'])
+        && request.resource.data.keys().hasOnly(['name', 'description', 'created_by', 'leader_id', 'created_at', 'updated_at'])
         && request.resource.data.name is string
         && request.resource.data.name.size() >= 2
         && request.resource.data.name.size() <= 150
         && request.resource.data.description is string
         && request.resource.data.description.size() <= 2000
         && request.resource.data.created_by == request.auth.uid
+        && request.resource.data.leader_id is string
+        && isApprovedProfessor(request.resource.data.leader_id)
+        && (appRole() == 'administrador' || request.resource.data.leader_id == request.auth.uid)
         && request.resource.data.created_at is string
         && request.resource.data.updated_at is string;
       allow update: if isStaff()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'description', 'updated_at'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'description', 'leader_id', 'updated_at'])
         && request.resource.data.name is string
         && request.resource.data.name.size() >= 2
         && request.resource.data.name.size() <= 150
         && request.resource.data.description is string
         && request.resource.data.description.size() <= 2000
+        && request.resource.data.leader_id is string
+        && isApprovedProfessor(request.resource.data.leader_id)
+        && (appRole() == 'administrador' || request.resource.data.leader_id == request.auth.uid)
         && request.resource.data.updated_at is string;
       allow delete: if isStaff();
 
@@ -337,19 +355,28 @@ service cloud.firestore {
           && (request.auth.uid == uid || isStaff() || resource.data.status == 'approved');
         allow list: if isStaff()
           || (isApproved() && resource.data.status == 'approved');
-        allow create: if isApproved()
-          && appRole() == 'aluno'
-          && exists(/databases/$(database)/documents/projects/$(projectId))
-          && request.auth.uid == uid
+        allow create: if exists(/databases/$(database)/documents/projects/$(projectId))
           && request.resource.data.keys().hasAll(['uid', 'full_name', 'matricula', 'status', 'requested_at'])
-          && request.resource.data.keys().hasOnly(['uid', 'full_name', 'matricula', 'status', 'requested_at'])
+          && request.resource.data.keys().hasOnly([
+            'uid', 'full_name', 'matricula', 'status', 'requested_at', 'reviewed_by', 'reviewed_at'
+          ])
           && request.resource.data.uid == uid
           && request.resource.data.full_name == get(profilePath(uid)).data.full_name
           && request.resource.data.matricula == get(profilePath(uid)).data.matricula
-          && request.resource.data.status == 'pending'
-          && request.resource.data.requested_at is string;
+          && request.resource.data.requested_at is string
+          && ((isApproved()
+              && appRole() == 'aluno'
+              && request.auth.uid == uid
+              && request.resource.data.status == 'pending'
+              && !('reviewed_by' in request.resource.data)
+              && !('reviewed_at' in request.resource.data))
+            || (isStaff()
+              && isApprovedStudent(uid)
+              && request.resource.data.status == 'approved'
+              && request.resource.data.reviewed_by == request.auth.uid
+              && request.resource.data.reviewed_at is string));
         allow update: if (isStaff()
-            && resource.data.status == 'pending'
+            && resource.data.status in ['pending', 'rejected']
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reviewed_by', 'reviewed_at'])
             && request.resource.data.status in ['approved', 'rejected']
             && request.resource.data.reviewed_by == request.auth.uid
@@ -360,7 +387,7 @@ service cloud.firestore {
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'requested_at'])
             && request.resource.data.status == 'pending'
             && request.resource.data.requested_at is string);
-        allow delete: if false;
+        allow delete: if isStaff();
       }
 
       match /documents/{documentId} {
