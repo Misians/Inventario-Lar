@@ -79,7 +79,9 @@ Use a matrícula normalizada (minúsculas) como ID do documento em `matriculas`.
 
 ## Variáveis do GitHub Pages
 
-Se usar o workflow existente do GitHub Pages, cadastre os seis valores `VITE_FIREBASE_*` como **Actions secrets** em **Settings → Secrets and variables → Actions**. São configurações web públicas do Firebase, não chaves administrativas. Nunca adicione uma service-account key ao frontend.
+Para o site publicado, cadastre os seis valores da configuração do app Web Firebase como **Actions secrets** no repositório, em **Settings → Secrets and variables → Actions → New repository secret**. Os nomes devem ser exatamente `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_STORAGE_BUCKET`, `VITE_FIREBASE_MESSAGING_SENDER_ID` e `VITE_FIREBASE_APP_ID`. Copie os valores da configuração do app Web no Firebase Console (ou do `.env` local); não envie o arquivo `.env` ao GitHub. São configurações web públicas do Firebase, não chaves administrativas. Nunca adicione uma service-account key ao frontend.
+
+O workflow valida a presença dessas seis variáveis e interrompe o deploy com erro se alguma estiver ausente. Depois de cadastrá-las, execute novamente **Actions → Deploy para GitHub Pages → Run workflow** na branch `master` (ou faça um push). Não é necessário publicar as regras do Firestore para corrigir a mensagem de configuração do Firebase.
 
 ## Limites e migração
 
